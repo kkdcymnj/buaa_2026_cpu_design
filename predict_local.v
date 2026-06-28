@@ -141,8 +141,8 @@ always @(posedge clk) begin
 end
 
 // Fetch 级连续 BRAM 预读（每周期读取，保证数据始终比 inst_fetch 提前 1 拍就绪）
-// 原理：Pre_PC 在两次 fetch 之间保持稳定，利用 BRAM 1 拍延迟做超前查找
-reg [31:0] fetch_pc_buffer;
+// 原理：Pre_PC 在 inst_sram_req 有效时已稳定，利用 BRAM 1 拍延迟做超前查找
+reg [31:0] fetch_pc_d1;           // 延迟 1 拍的 PC，与 BRAM 输出对齐
 reg                 fetch_output_valid;
 reg [14:0]          fetch_btb_tag_r;
 reg [29:0]          fetch_btb_target_r;
@@ -152,7 +152,7 @@ reg [1:0]           fetch_pht_counter_r;
 
 always @(posedge clk) begin
     if (reset) begin
-        fetch_pc_buffer     <= 32'b0;
+        fetch_pc_d1         <= 32'b0;
         fetch_output_valid  <= 1'b0;
         fetch_btb_tag_r     <= 0;
         fetch_btb_target_r  <= 0;
@@ -160,26 +160,26 @@ always @(posedge clk) begin
         fetch_bht_value_r   <= 0;
         fetch_pht_counter_r <= 0;
     end else begin
-        // 每周期捕获 fetch_pc（Pre_PC 在 fetch 间隙稳定不变）
-        fetch_pc_buffer <= fetch_pc;
-        // 每周期对 fetch_pc_buffer 发起 BRAM 同步读，下一拍数据有效
-        fetch_btb_tag_r    <= btb_tag[fetch_pc_buffer[`PC_INDEX_HIGH:`PC_INDEX_LOW]];
-        fetch_btb_target_r <= btb_target[fetch_pc_buffer[`PC_INDEX_HIGH:`PC_INDEX_LOW]];
-        fetch_btb_valid_r  <= btb_valid[fetch_pc_buffer[`PC_INDEX_HIGH:`PC_INDEX_LOW]];
-        fetch_bht_value_r  <= bht_entry[fetch_pc_buffer[`BHR_INDEX_HIGH:`BHR_INDEX_LOW]];
+        // 直接用 fetch_pc 发起 BRAM 同步读（不用缓冲区，消除 1 拍滞后）
+        fetch_btb_tag_r    <= btb_tag[fetch_pc[`PC_INDEX_HIGH:`PC_INDEX_LOW]];
+        fetch_btb_target_r <= btb_target[fetch_pc[`PC_INDEX_HIGH:`PC_INDEX_LOW]];
+        fetch_btb_valid_r  <= btb_valid[fetch_pc[`PC_INDEX_HIGH:`PC_INDEX_LOW]];
+        fetch_bht_value_r  <= bht_entry[fetch_pc[`BHR_INDEX_HIGH:`BHR_INDEX_LOW]];
         fetch_pht_counter_r <= pht_entry[pht_index(
-            (fetch_pc_buffer[31:22] ^ fetch_pc_buffer[21:12] ^ fetch_pc_buffer[11:2])
-            ^ {bht_entry[fetch_pc_buffer[`BHR_INDEX_HIGH:`BHR_INDEX_LOW]], {PHT_WIDTH-HISTORY_WIDTH{1'b0}}},
-            bht_entry[fetch_pc_buffer[`BHR_INDEX_HIGH:`BHR_INDEX_LOW]]
+            (fetch_pc[31:22] ^ fetch_pc[21:12] ^ fetch_pc[11:2])
+            ^ {bht_entry[fetch_pc[`BHR_INDEX_HIGH:`BHR_INDEX_LOW]], {PHT_WIDTH-HISTORY_WIDTH{1'b0}}},
+            bht_entry[fetch_pc[`BHR_INDEX_HIGH:`BHR_INDEX_LOW]]
         )];
+        // 延迟 1 拍以便 tag 比较
+        fetch_pc_d1         <= fetch_pc;
         // inst_fetch 有效时标定输出有效（下一拍 Pre_to_F_valid 会为高）
-        fetch_output_valid <= inst_fetch;
+        fetch_output_valid  <= inst_fetch;
     end
 end
 
 wire btb_match;
 assign btb_match = fetch_output_valid && fetch_btb_valid_r && 
-                   (fetch_pc_buffer[`PC_TAG_HIGH:`PC_TAG_LOW] == fetch_btb_tag_r);
+                   (fetch_pc_d1[`PC_TAG_HIGH:`PC_TAG_LOW] == fetch_btb_tag_r);
 
 wire ras_match;
 assign ras_match = fetch_output_valid && ras_pop_return && !ras_empty; 
@@ -235,6 +235,6 @@ assign ras_read_ptr = (ras_ptr == 0) ? 0 : ras_ptr - 1'b1;
 assign btb_enable = ras_match | btb_match;
 assign btb_taken  = ras_match | (btb_match && fetch_pht_counter_r[1]);
 assign btb_pc     = ras_match ? {ras_stack[ras_read_ptr], 2'b0} : {fetch_btb_target_r, 2'b0};
-assign btb_index  = fetch_pc_buffer[`PC_INDEX_HIGH : `PC_INDEX_LOW];
+assign btb_index  = fetch_pc_d1[`PC_INDEX_HIGH : `PC_INDEX_LOW];
 
 endmodule

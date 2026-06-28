@@ -2003,7 +2003,7 @@ predict_local u_predict(
     .clk               (clk               ),
     .reset             (reset             ),
 
-    .inst_fetch        (Pre_to_F_valid & F_ready),
+    .inst_fetch        (Pre_to_F_valid && F_ready),           
     .fetch_pc          (Pre_PC            ),
     .btb_pc            (F_btb_pc        ),
     .btb_taken         (F_btb_taken     ), 
