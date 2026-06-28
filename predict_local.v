@@ -40,7 +40,8 @@ module predict_local #(
 
 localparam PHT_DEPTH  = (1 << PHT_WIDTH) * (1 << HISTORY_WIDTH);  // 1024 * 16 = 16384
 
-(* ram_style = "block" *) reg [HISTORY_WIDTH-1:0] bht_entry [0:BHRNUM-1];  // BRAM 默认初始值全 0
+// BHT：小容量（1024×5 bit），直接用 LUTRAM 实现，避免异步读导致 BRAM 推断失败
+reg [HISTORY_WIDTH-1:0] bht_entry [0:BHRNUM-1];
 
 // BHT operate 路径：同步读（地址寄存 → BRAM 数据下一拍有效）
 reg [$clog2(BHRNUM)-1:0] bht_addr_r;
@@ -85,15 +86,7 @@ always @(posedge clk) begin
     hashed_operate_pc_d1   <= operate_pc[31:22] ^ operate_pc[21:12] ^ operate_pc[11:2];
 end
 
-(* ram_style = "block" *) reg [1:0] pht_entry [0:PHT_DEPTH-1];
-
-// PHT BRAM 配置时初始化为弱跳转 (BRAM 支持 initial 块)
-integer init_pht;
-initial begin
-    for (init_pht = 0; init_pht < PHT_DEPTH; init_pht = init_pht + 1) begin
-        pht_entry[init_pht] = 2'b10;
-    end
-end
+(* ram_style = "block" *) reg [1:0] pht_entry [0:PHT_DEPTH-1];  // BRAM, FPGA 配置时默认定值，无需同步复位
 
 // PHT索引计算函数 - 完整保留
 function [$clog2(PHT_DEPTH)-1:0] pht_index;
@@ -150,6 +143,15 @@ reg                 fetch_btb_valid_r;
 reg [HISTORY_WIDTH-1:0] fetch_bht_value_r;
 reg [1:0]           fetch_pht_counter_r;
 
+// 预计算 fetch 索引（组合逻辑），简化 always 块中 BRAM 读表达式
+wire [$clog2(BTBNUM)-1:0]      fetch_btb_idx;
+wire [$clog2(BHRNUM)-1:0]      fetch_bht_idx;
+wire [PHT_WIDTH-1:0]           fetch_hashed_pc;
+
+assign fetch_btb_idx    = fetch_pc[`PC_INDEX_HIGH : `PC_INDEX_LOW];
+assign fetch_bht_idx    = fetch_pc[`BHR_INDEX_HIGH : `BHR_INDEX_LOW];
+assign fetch_hashed_pc  = fetch_pc[31:22] ^ fetch_pc[21:12] ^ fetch_pc[11:2];
+
 always @(posedge clk) begin
     if (reset) begin
         fetch_pc_d1         <= 32'b0;
@@ -160,15 +162,15 @@ always @(posedge clk) begin
         fetch_bht_value_r   <= 0;
         fetch_pht_counter_r <= 0;
     end else begin
-        // 直接用 fetch_pc 发起 BRAM 同步读（不用缓冲区，消除 1 拍滞后）
-        fetch_btb_tag_r    <= btb_tag[fetch_pc[`PC_INDEX_HIGH:`PC_INDEX_LOW]];
-        fetch_btb_target_r <= btb_target[fetch_pc[`PC_INDEX_HIGH:`PC_INDEX_LOW]];
-        fetch_btb_valid_r  <= btb_valid[fetch_pc[`PC_INDEX_HIGH:`PC_INDEX_LOW]];
-        fetch_bht_value_r  <= bht_entry[fetch_pc[`BHR_INDEX_HIGH:`BHR_INDEX_LOW]];
+        // BRAM 同步读：每个数组独立一行，便于 Vivado 推断读端口
+        fetch_btb_tag_r    <= btb_tag   [fetch_btb_idx];
+        fetch_btb_target_r <= btb_target[fetch_btb_idx];
+        fetch_btb_valid_r  <= btb_valid [fetch_btb_idx];
+        fetch_bht_value_r  <= bht_entry [fetch_bht_idx];
+        // PHT 读：需要 bht_entry 的值参与索引计算（Vivado 推断 bht_entry 的第二个读端口）
         fetch_pht_counter_r <= pht_entry[pht_index(
-            (fetch_pc[31:22] ^ fetch_pc[21:12] ^ fetch_pc[11:2])
-            ^ {bht_entry[fetch_pc[`BHR_INDEX_HIGH:`BHR_INDEX_LOW]], {PHT_WIDTH-HISTORY_WIDTH{1'b0}}},
-            bht_entry[fetch_pc[`BHR_INDEX_HIGH:`BHR_INDEX_LOW]]
+            fetch_hashed_pc ^ {bht_entry[fetch_bht_idx], {(PHT_WIDTH-HISTORY_WIDTH){1'b0}}},
+            bht_entry[fetch_bht_idx]
         )];
         // 延迟 1 拍以便 tag 比较
         fetch_pc_d1         <= fetch_pc;
@@ -191,37 +193,64 @@ always @(posedge clk) begin
     else if (operate_enable_d1) begin
         if (!ras_pop_return_d1) begin
             if (add_entry_d1) begin
-                btb_valid[btb_add_entry_index_d1]   <= 1'b1;
-                btb_tag[btb_add_entry_index_d1]     <= operate_pc_d1[`PC_TAG_HIGH:`PC_TAG_LOW];
-                btb_target[btb_add_entry_index_d1]  <= right_target_d1[31:2];
-                
-                // 初始化PHT当前条目为弱跳转
-                pht_entry[pht_index(pht_addr, bht_value_r)] <= 2'b10;
+                btb_valid[btb_add_entry_index_d1] <= 1'b1;
             end
-            
             else if (delete_entry_d1) begin
                 btb_valid[operate_btb_index_d1] <= 1'b0;
             end
+        end
+    end
+end
 
-            else if (target_error_d1) begin
-                btb_target[operate_btb_index_d1] <= right_target_d1[31:2];
-                pht_entry[pht_index(pht_addr, bht_value_r)] <= 2'b10;
-            end
+// ===== 独立 BRAM 写块：btb_tag (无 reset) =====
+always @(posedge clk) begin
+    if (operate_enable_d1 && !ras_pop_return_d1 && add_entry_d1) begin
+        btb_tag[btb_add_entry_index_d1] <= operate_pc_d1[`PC_TAG_HIGH:`PC_TAG_LOW];
+    end
+end
 
-            else if (predict_error_d1 || predict_correct_d1) begin
-                if (right_orien_d1) begin
-                    if (pht_entry[pht_index(pht_addr, bht_value_r)] != 2'b11) begin
-                        pht_entry[pht_index(pht_addr, bht_value_r)] <= pht_entry[pht_index(pht_addr, bht_value_r)] + 1'b1;
-                    end
-                end else begin
-                    if (pht_entry[pht_index(pht_addr, bht_value_r)] != 2'b00) begin
-                        pht_entry[pht_index(pht_addr, bht_value_r)] <= pht_entry[pht_index(pht_addr, bht_value_r)] - 1'b1;
-                    end
-                end
-            end
+// ===== 独立 BRAM 写块：btb_target (无 reset) =====
+always @(posedge clk) begin
+    if (operate_enable_d1 && !ras_pop_return_d1) begin
+        if (add_entry_d1) begin
+            btb_target[btb_add_entry_index_d1] <= right_target_d1[31:2];
+        end
+        else if (target_error_d1) begin
+            btb_target[operate_btb_index_d1] <= right_target_d1[31:2];
+        end
+    end
+end
 
-            if (add_entry_d1 || target_error_d1 || predict_error_d1 || predict_correct_d1) begin
-                bht_entry[bht_addr_r] <= {right_orien_d1, bht_value_r[HISTORY_WIDTH-1:1]};
+// ===== 独立 BRAM 写块：bht_entry (无 reset) =====
+// BHT 更新需要读 bht_value_r（上一拍已读出），移位拼接写回
+always @(posedge clk) begin
+    if (operate_enable_d1 && !ras_pop_return_d1 &&
+        (add_entry_d1 || target_error_d1 || predict_error_d1 || predict_correct_d1)) begin
+        bht_entry[bht_addr_r] <= {right_orien_d1, bht_value_r[HISTORY_WIDTH-1:1]};
+    end
+end
+
+// ===== 独立 BRAM 写块：pht_entry (无 reset) =====
+// PHT 饱和计数器更新（读-修改-写，BRAM READ_FIRST 模式）
+// 预计算 PHT 索引，避免同一表达式的多次函数调用
+wire [$clog2(PHT_DEPTH)-1:0] pht_update_idx;
+assign pht_update_idx = pht_index(pht_addr, bht_value_r);
+
+wire [1:0] pht_update_old;  // 从 BRAM 同步读出的旧值（BRAM 输出已锁存）
+assign pht_update_old = pht_entry[pht_update_idx];
+
+always @(posedge clk) begin
+    if (operate_enable_d1 && !ras_pop_return_d1) begin
+        if (add_entry_d1 || target_error_d1) begin
+            pht_entry[pht_update_idx] <= 2'b10;
+        end
+        else if (predict_error_d1 || predict_correct_d1) begin
+            if (right_orien_d1) begin
+                if (pht_update_old != 2'b11)
+                    pht_entry[pht_update_idx] <= pht_update_old + 1'b1;
+            end else begin
+                if (pht_update_old != 2'b00)
+                    pht_entry[pht_update_idx] <= pht_update_old - 1'b1;
             end
         end
     end
