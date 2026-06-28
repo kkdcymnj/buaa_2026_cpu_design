@@ -1,6 +1,8 @@
 `include "constant.v"
 `include "instr_code.v"
 
+
+
 module core_top (
     input  wire        aclk,
     input  wire        aresetn,
@@ -60,6 +62,7 @@ module core_top (
     output wire [31:0] debug0_wb_rf_wdata
 );
 
+`ifdef CHIPLAB
 mycpu_top u_mycpu_top (
     .aclk             (aclk),
     .aresetn          (aresetn),
@@ -232,5 +235,7 @@ my_difftest u_my_difftest(
     .DMW1           (u_mycpu_top.u_CSRF.DMW[1]           ),
     .GPR            (u_mycpu_top.d_GRF.d_grf            )
 );
+
+`endif
 
 endmodule

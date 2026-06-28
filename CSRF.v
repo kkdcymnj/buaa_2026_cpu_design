@@ -108,6 +108,7 @@ reg [               31:0] TICLR;
 reg  [               31:0] TLBRENTRY;
 reg  [               31:0] DMW       [1:0];
 
+/*
 initial begin
     CRMD <= 32'b0;
     PRMD <= 32'b0;
@@ -134,6 +135,37 @@ initial begin
     TLBRENTRY <= 32'b0;
     DMW[0] <= 32'b0;
     DMW[1] <= 32'b0;
+end
+*/
+
+always @(posedge clk ) begin
+    if (reset) begin
+        CRMD <= 32'b0;
+        PRMD <= 32'b0;
+        ECFG <= 32'b0;
+        ESTAT <= 32'b0;
+        ERA <= 32'b0;
+        BADV <= 32'b0;
+        EENTRY <= 32'b0;
+        TLBIDX <= 32'b0;
+        TLBEHI <= 32'b0;
+        TLBELO0 <= 32'b0;
+        TLBELO1 <= 32'b0;
+        ASID <= 32'b0;
+        PGDL <= 32'b0;
+        PGDH <= 32'b0;
+        SAVE[0] <= 32'b0;
+        SAVE[1] <= 32'b0;
+        SAVE[2] <= 32'b0;
+        SAVE[3] <= 32'b0;
+        LLBCTL <= 32'b0;
+        TID <= 32'b0;
+        TCFG <= 32'b0;
+        TVAL <= 32'b0;
+        TLBRENTRY <= 32'b0;
+        DMW[0] <= 32'b0;
+        DMW[1] <= 32'b0;
+    end
 end
 
 wire [   `ETYPE_WIDTH-1:0] etype;

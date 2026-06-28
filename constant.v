@@ -1,7 +1,7 @@
 //`ifndef MACROS_VH
 //`define MACROS_VH
 
-`define CHIPLAB 
+// `define CHIPLAB 
 
 `define alu_add         0  
 `define alu_sub         1  

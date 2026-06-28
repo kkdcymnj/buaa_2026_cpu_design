@@ -166,26 +166,33 @@ endfunction
 
 // 遍历PLRU树，找到牺牲项索引
 function automatic [$clog2(TLBNUM)-1:0] get_victim;
+    input [PLRU_NODES-1:0] tree;
     integer node;
+    integer k;
     begin
         node = 0;
-        while (node < PLRU_NODES) begin
-            if (plru_tree[node])
-                node = get_right_child(node);
-            else
-                node = get_left_child(node);
+        for (k = 0; k < PLRU_DEPTH; k = k + 1) begin
+            if (node < PLRU_NODES) begin
+                if (tree[node])
+                    node = get_right_child(node);
+                else
+                    node = get_left_child(node);
+            end
         end
         get_victim = node - PLRU_NODES;
     end
 endfunction
 
 // 更新PLRU树
-function automatic update_plru;
+localparam PLRU_DEPTH = $clog2(TLBNUM);  // 二叉树深度
+
+task automatic update_plru;
     input integer accessed_index;
     integer node;
+    integer k;
     begin
         node = PLRU_NODES + accessed_index;
-        while (node > 0) begin
+        for (k = 0; k < PLRU_DEPTH; k = k + 1) begin
             node = get_parent(node);
             if (node < PLRU_NODES) begin
                 if (is_left_child(node))
@@ -195,7 +202,7 @@ function automatic update_plru;
             end
         end
     end
-endfunction
+endtask
 
 // ========== TLB读操作 ==========
 assign r_vppn = tlb_vppn[r_index];
@@ -297,7 +304,7 @@ end
 
 // ========== 输出PLRU牺牲项 ==========
 // 组合逻辑输出当前最久未使用的TLB项
-assign victim = get_victim();
+assign victim = get_victim(plru_tree);
 
 // ========== 搜索端口0输出 ==========
 assign s0_found = |match0;
